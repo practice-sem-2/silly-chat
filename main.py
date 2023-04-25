@@ -2,7 +2,8 @@ from asyncio import Queue
 from datetime import datetime, timedelta
 from typing import AsyncIterable
 
-from fastapi import FastAPI, Depends, HTTPException, Query, Header, WebSocket
+from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt
 from pydantic import BaseModel
 
@@ -141,22 +142,11 @@ class UserService:
 
 room_service = RoomService()
 user_service = UserService('qwerty')
+auth_scheme = HTTPBearer()
 
 
-def get_token(authorization: str = Header(..., alias='Authorization')) -> str:
-    parts = authorization.split(' ')
-    if len(parts) != 2:
-        raise HTTPException(400, detail="Credentials must be passed")
-
-    token_type, token = parts
-    if token_type.lower() != "bearer":
-        raise HTTPException(400, detail="Token must be bearer")
-
-    return token
-
-
-def get_user(token: str = Depends(get_token)) -> User:
-    return user_service.parse_token(token)
+def get_user(bearer: HTTPAuthorizationCredentials = Depends(auth_scheme)) -> User:
+    return user_service.parse_token(bearer.credentials)
 
 
 @app.post('/sign-in')
@@ -164,25 +154,43 @@ async def auth(username: str = Query()) -> User:
     return user_service.create_user(username)
 
 
-@app.post('/rooms/{room}/', response_model=None, response_model_exclude_none=True)
-async def create_room(room: str, token: str = Depends(get_token)) -> None:
-    user = user_service.parse_token(token)
+@app.post(
+    '/rooms/{room}/',
+    response_model=None,
+    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
+    status_code=201,
+    summary="Creates a new room",
+    description="Создает новую комнату, если ее название еще не занятно, в данном случае возвращает код 400."
+)
+async def create_room(room: str, user: User = Depends(get_user)) -> None:
     room_service.create_room(room, user.username)
 
 
-@app.get('/rooms/{room}/users/list')
-async def get_room_users(room: str, token: str = Depends(get_token)) -> list[str]:
-    user = user_service.parse_token(token)
+@app.get(
+    '/rooms/{room}/users/list',
+    status_code=200,
+    summary="Returns a list of users those were joined to the room"
+)
+async def get_room_users(room: str, user: User = Depends(get_user)) -> list[str]:
     return list(room_service.get_room(room).users)
 
 
-@app.post('/rooms/{room}/join/', response_model=None, response_model_exclude_none=True)
-async def join(room: str, token: str = Depends(get_token)) -> None:
-    user = user_service.parse_token(token)
+@app.post(
+    '/rooms/{room}/join/',
+    response_model=None,
+    response_model_exclude_none=True,
+    response_model_exclude_unset=True,
+    summary="Join current user to a room",
+)
+async def join(room: str, user: User = Depends(get_user)) -> None:
     room_service.join(room, user.username)
 
 
-@app.post('/rooms/{room}/messages/send')
+@app.post(
+    '/rooms/{room}/messages/send',
+    summary="Sends a message from current user to the room"
+)
 async def send_message(
         room: str,
         user: User = Depends(get_user),
