@@ -1,0 +1,37 @@
+GET http://127.0.0.1:8000/rooms/{{room}}/users/list
+Accept: application/json
+Authorization: Bearer {{token}}
+
+###
+
+POST http://127.0.0.1:8000/rooms/{{room}}/messages/send?text=Hello%20World
+Accept: application/json
+Authorization: Bearer {{token}}
+
+###
+
+POST http://127.0.0.1:8000/rooms/{{room}}/join/
+Content-Type: application/json
+Accept: application/json
+Authorization: Bearer {{token}}
+
+###
+
+POST http://127.0.0.1:8000/sign-in?username=qwerty
+Accept: application/json
+
+###
+
+
+POST http://127.0.0.1:8000/rooms/{{room}}/
+Accept: application/json
+Authorization: Bearer {{token}} // Токен действителен неделю, не забываем обновлять
+
+> {%
+    client.test("Group created successfully", () => {
+        client.assert(response.status === 200)
+    })
+%}
+
+###
+
