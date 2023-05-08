@@ -1,29 +1,35 @@
+import uuid
 from asyncio import Queue
 from datetime import datetime, timedelta
 from typing import AsyncIterable, Annotated
 
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
+from pydantic.types import UUID4
 
 from listener import EventListener, Event, UserConnectedEvent, NewMessageEvent, UserDisconnectedEvent
 
 app = FastAPI()
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-dick_base = {}
 class MessageSend(BaseModel):
     from_user: str
     text: str
 
 
 class Message(BaseModel):
+    message_id: UUID4
     sent_at: datetime
     from_user: str
     text: str
+
+
+class UserInDb(BaseModel):
+    username: str
+    password_hash: str
 
 
 class User(BaseModel):
@@ -82,6 +88,7 @@ class RoomService:
 
         msg = Message(
             **message.dict(),
+            message_id=uuid.uuid4(),
             sent_at=datetime.now(),
         )
         self.rooms[room_name].messages.append(msg)
@@ -111,28 +118,11 @@ class RoomService:
 class UserService:
 
     def __init__(self, secret: str):
-        self.users = set[str]()
+        self.users = dict[str, str]()
         self.secret = secret
+        self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-    def create_user(self, username: str) -> User:
-        if username in self.users:
-            raise HTTPException(status_code=400, detail="username already taken")
-
-        now = datetime.now()
-        print(now, now.timestamp())
-        token = jwt.encode(
-            key=self.secret,
-            claims={
-                'iat': int(now.timestamp()),
-                'nbf': int(now.timestamp()),
-                'exp': int((now + timedelta(weeks=2)).timestamp()),
-                'sub': username,
-            },
-            algorithm=jwt.ALGORITHMS.HS256
-        )
-        return User(username=username, token=token)
-
-    def authenticate_user(self, username: str) -> User:
+    def authenticate_user(self, username: str) -> str:
         now = datetime.now()
         token = jwt.encode(
             key=self.secret,
@@ -144,46 +134,36 @@ class UserService:
             },
             algorithm=jwt.ALGORITHMS.HS256
         )
-        return User(username=username, token=token)
-    def authenticate_user(self, username: str) -> User:
-        now = datetime.now()
-        token = jwt.encode(
-            key=self.secret,
-            claims={
-                'iat': int(now.timestamp()),
-                'nbf': int(now.timestamp()),
-                'exp': int((now + timedelta(weeks=2)).timestamp()),
-                'sub': username,
-            },
-            algorithm=jwt.ALGORITHMS.HS256
-        )
-        return User(username=username, token=token)
+        return token
 
     def verify_password(self, plain_password, hashed_password):
-        return pwd_context.verify(plain_password, hashed_password)
+        return self.pwd_context.verify(plain_password, hashed_password)
 
     def get_password_hash(self, password):
-        return pwd_context.hash(password)
+        return self.pwd_context.hash(password)
 
     def registrate_user(self, username, password):
+        if username in self.users:
+            raise HTTPException(
+                status_code=400,
+                detail=f"user with username '{username}' already exists"
+            )
         hash_pass = user_service.get_password_hash(password)
-        dick_base[username] = hash_pass
+        self.users[username] = hash_pass
 
-    def find_user(self, dick_base, username):
-        if username in dick_base.keys():
-            return dick_base[username]
+    def find_user(self, username) -> UserInDb | None:
+        if username in self.users:
+            return UserInDb(username=username, password_hash=self.users[username])
 
-    def check_pass(self, dick_b, username: str, password: str):
-        user_pass = user_service.find_user(dick_b, username)
-        if not user_pass:
+    def check_pass(self, username: str, password: str) -> bool:
+        user = self.find_user(username)
+        if user is None:
             return False
-        if not user_service.verify_password(password, user_pass):
-            return False
-        return user_pass
 
+        return self.verify_password(password, user.password_hash)
 
     def delete_user(self, username: str) -> None:
-        self.users.discard(username)
+        del self.users[username]
 
     def parse_token(self, token: str) -> User:
         try:
@@ -195,16 +175,13 @@ class UserService:
 
 room_service = RoomService()
 user_service = UserService('qwerty')
-auth_scheme = HTTPBearer()
+auth_scheme = OAuth2PasswordBearer(
+    tokenUrl="/auth/sign-in",
+)
 
 
-def get_user(bearer: HTTPAuthorizationCredentials = Depends(auth_scheme)) -> User:
-    return user_service.parse_token(bearer.credentials)
-
-
-@app.post('/sign-in')
-async def auth(username: str = Query()) -> User:
-    return user_service.create_user(username)
+def get_user(bearer: str = Depends(auth_scheme)) -> User:
+    return user_service.parse_token(bearer)
 
 
 @app.post(
@@ -223,9 +200,10 @@ async def create_room(room: str, user: User = Depends(get_user)) -> None:
 @app.get(
     '/rooms/{room}/users/list',
     status_code=200,
-    summary="Returns a list of users those were joined to the room"
+    summary="Returns a list of users those were joined to the room",
+    dependencies=[Depends(get_user)]
 )
-async def get_room_users(room: str, user: User = Depends(get_user)) -> list[str]:
+async def get_room_users(room: str) -> list[str]:
     return list(room_service.get_room(room).users)
 
 
@@ -279,10 +257,10 @@ async def listen_room_events(
     ))
 
 
-@app.post("/auth/sign-in")
+@app.post("/auth/sign-in", status_code=200)
 async def login_for_access_token(
-    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
-    user = user_service.check_pass(dick_base, form_data.username, form_data.password)
+        form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    user = user_service.check_pass(form_data.username, form_data.password)
     username = form_data.username
     if not user:
         raise HTTPException(
@@ -295,6 +273,11 @@ async def login_for_access_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@app.post('/registration', status_code=201)
-async def auth(username: str = Query(), password: str = Query()):
-    user_service.registrate_user(username, password)
+@app.post(
+    '/auth/sign-up',
+    status_code=201,
+    response_model=None,
+    response_model_exclude_defaults=True,
+)
+async def auth(form_data: OAuth2PasswordRequestForm = Depends()):
+    user_service.registrate_user(form_data.username, form_data.password)
