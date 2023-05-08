@@ -1,17 +1,21 @@
 from asyncio import Queue
 from datetime import datetime, timedelta
-from typing import AsyncIterable
+from typing import AsyncIterable, Annotated
 
-from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, Path
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from jose import jwt
+from passlib.context import CryptContext
 from pydantic import BaseModel
 
 from listener import EventListener, Event, UserConnectedEvent, NewMessageEvent, UserDisconnectedEvent
 
 app = FastAPI()
 
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
+dick_base = {}
 class MessageSend(BaseModel):
     from_user: str
     text: str
@@ -129,6 +133,56 @@ class UserService:
         )
         return User(username=username, token=token)
 
+    def authenticate_user(self, username: str) -> User:
+        now = datetime.now()
+        token = jwt.encode(
+            key=self.secret,
+            claims={
+                'iat': int(now.timestamp()),
+                'nbf': int(now.timestamp()),
+                'exp': int((now + timedelta(weeks=2)).timestamp()),
+                'sub': username,
+            },
+            algorithm=jwt.ALGORITHMS.HS256
+        )
+        return User(username=username, token=token)
+    def authenticate_user(self, username: str) -> User:
+        now = datetime.now()
+        token = jwt.encode(
+            key=self.secret,
+            claims={
+                'iat': int(now.timestamp()),
+                'nbf': int(now.timestamp()),
+                'exp': int((now + timedelta(weeks=2)).timestamp()),
+                'sub': username,
+            },
+            algorithm=jwt.ALGORITHMS.HS256
+        )
+        return User(username=username, token=token)
+
+    def verify_password(self, plain_password, hashed_password):
+        return pwd_context.verify(plain_password, hashed_password)
+
+    def get_password_hash(self, password):
+        return pwd_context.hash(password)
+
+    def registrate_user(self, username, password):
+        hash_pass = user_service.get_password_hash(password)
+        dick_base[username] = hash_pass
+
+    def find_user(self, dick_base, username):
+        if username in dick_base.keys():
+            return dick_base[username]
+
+    def check_pass(self, dick_b, username: str, password: str):
+        user_pass = user_service.find_user(dick_b, username)
+        if not user_pass:
+            return False
+        if not user_service.verify_password(password, user_pass):
+            return False
+        return user_pass
+
+
     def delete_user(self, username: str) -> None:
         self.users.discard(username)
 
@@ -233,3 +287,24 @@ async def listen_room_events(
         username=user.username,
         disconnected_at=datetime.now(),
     ))
+
+
+@app.post("/auth/sign-in")
+async def login_for_access_token(
+    form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+    user = user_service.check_pass(dick_base, form_data.username, form_data.password)
+    username = form_data.username
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = user_service.authenticate_user(username)
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+@app.post('/registration', status_code=201)
+async def auth(username: str = Query(), password: str = Query()):
+    user_service.registrate_user(username, password)
