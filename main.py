@@ -2,6 +2,7 @@ from asyncio import Queue
 from datetime import datetime, timedelta
 from typing import AsyncIterable, Annotated
 
+
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
 from jose import jwt
@@ -202,7 +203,11 @@ def get_user(bearer: HTTPAuthorizationCredentials = Depends(auth_scheme)) -> Use
     return user_service.parse_token(bearer.credentials)
 
 
-@app.post('/sign-in')
+@app.post(
+    '/sign-in',
+    response_model=User,
+    status_code=201,
+)
 async def auth(username: str = Query()) -> User:
     return user_service.create_user(username)
 
@@ -214,7 +219,7 @@ async def auth(username: str = Query()) -> User:
     response_model_exclude_unset=True,
     status_code=201,
     summary="Creates a new room",
-    description="Создает новую комнату, если ее название еще не занятно, в данном случае возвращает код 400."
+    description="Создает новую комнату, если ее название еще не занятно, иначе возвращает код 400."
 )
 async def create_room(room: str, user: User = Depends(get_user)) -> None:
     room_service.create_room(room, user.username)
@@ -236,16 +241,21 @@ async def get_room_users(room: str, user: User = Depends(get_user)) -> list[str]
     response_model_exclude_unset=True,
     summary="Join current user to a room",
 )
-async def join(room: str, user: User = Depends(get_user)) -> None:
+async def join(
+        room: str = Path(),
+        user: User = Depends(get_user)
+) -> None:
     room_service.join(room, user.username)
 
 
 @app.post(
     '/rooms/{room}/messages/send',
-    summary="Sends a message from current user to the room"
+    summary="Sends a message from current user to the room",
+    status_code=201,
+    response_model=Message,
 )
 async def send_message(
-        room: str,
+        room: str = Path(title='Имя комнаты'),
         user: User = Depends(get_user),
         text: str = Query()
 ) -> Message:
