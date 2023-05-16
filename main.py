@@ -48,6 +48,11 @@ class Room(BaseModel):
         arbitrary_types_allowed = True
 
 
+class RoomGet(BaseModel):
+    name: str
+    members_count: int
+
+
 class RoomService:
 
     def __init__(self):
@@ -100,6 +105,17 @@ class RoomService:
         ))
 
         return msg
+
+    def get_users_rooms(self, username: str) -> list[RoomGet]:
+        result: list[RoomGet] = []
+        for room in self.rooms.values():
+            if username in room.users:
+                result.append(RoomGet(
+                    name=room.name,
+                    members_count=len(room.users),
+                ))
+
+        return result
 
     def create_room(self, room: str, creator: str) -> Room:
         if room in self.rooms:
@@ -255,6 +271,17 @@ async def listen_room_events(
         username=user.username,
         disconnected_at=datetime.now(),
     ))
+
+
+@app.get(
+    "/rooms",
+    response_model=list[RoomGet],
+    status_code=200,
+)
+async def get_user_rooms(
+        user: User = Depends(get_user),
+) -> list[RoomGet]:
+    return room_service.get_users_rooms(user.username)
 
 
 @app.post("/auth/sign-in", status_code=200)
