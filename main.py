@@ -3,14 +3,13 @@ from asyncio import Queue
 from datetime import datetime, timedelta
 from typing import AsyncIterable, Annotated
 
-from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, status
+from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, status, Form, Response
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from jose import jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
-from pydantic.types import UUID4
+from pydantic import BaseModel, UUID4
 
-from listener import EventListener, Event, UserConnectedEvent, NewMessageEvent, UserDisconnectedEvent
+from listener import EventListener, Event, UserConnectedEvent, NewMessageEvent, UserDisconnectedEvent, UserJoinedEvent
 
 app = FastAPI()
 
@@ -64,6 +63,10 @@ class RoomService:
         if username in room.users:
             raise HTTPException(status_code=400, detail="User already in room")
         room.users.add(username)
+        self.notify(room_name, UserJoinedEvent(
+            username=username,
+            joined_at=datetime.now()
+        ))
 
     def notify(self, room: str, event: Event) -> None:
         for q in self.get_room(room).listeners:
@@ -94,6 +97,7 @@ class RoomService:
         self.rooms[room_name].messages.append(msg)
 
         self.notify(room_name, event=NewMessageEvent(
+            message_id=msg.message_id,
             from_user=message.from_user,
             text=message.text,
             sent_at=datetime.now(),
@@ -169,7 +173,7 @@ class UserService:
         try:
             claims = jwt.decode(token, self.secret, algorithms=[jwt.ALGORITHMS.HS256])
             return User(token=token, username=claims['sub'])
-        except jwt.JWTError as e:
+        except Exception as e:
             raise HTTPException(status_code=401, detail=f"invalid token: {e.args[0]}")
 
 
@@ -184,17 +188,23 @@ def get_user(bearer: str = Depends(auth_scheme)) -> User:
     return user_service.parse_token(bearer)
 
 
+def get_user_websocket(bearer: str = Query(alias='access_token')) -> User | None:
+    try:
+        return user_service.parse_token(bearer)
+    except HTTPException:
+        return None
+
+
 @app.post(
     '/rooms/{room}/',
     response_model=None,
-    response_model_exclude_none=True,
-    response_model_exclude_unset=True,
     status_code=201,
     summary="Creates a new room",
     description="Создает новую комнату, если ее название еще не занятно, в данном случае возвращает код 400."
 )
-async def create_room(room: str, user: User = Depends(get_user)) -> None:
+async def create_room(room: str, user: User = Depends(get_user)):
     room_service.create_room(room, user.username)
+    return Response(status_code=201)
 
 
 @app.get(
@@ -210,12 +220,12 @@ async def get_room_users(room: str) -> list[str]:
 @app.post(
     '/rooms/{room}/join/',
     response_model=None,
-    response_model_exclude_none=True,
-    response_model_exclude_unset=True,
     summary="Join current user to a room",
+    status_code=200,
 )
-async def join(room: str, user: User = Depends(get_user)) -> None:
+async def join(room: str, user: User = Depends(get_user)):
     room_service.join(room, user.username)
+    return Response(status_code=200)
 
 
 @app.post(
@@ -234,12 +244,15 @@ async def send_message(
 async def listen_room_events(
         ws: WebSocket,
         room: str,
-        user: User = Depends(get_user)
+        user: User = Depends(get_user_websocket),
 ) -> None:
     try:
+        if user is None:
+            await ws.close(1003, 'invalid token')
+            return
         event_source = await room_service.get_events(room)
     except HTTPException:
-        await ws.close(400, 'room does not exist')
+        await ws.close(1003, 'room does not exist')
         return
 
     async def do_nothing():
@@ -259,7 +272,8 @@ async def listen_room_events(
 
 @app.post("/auth/sign-in", status_code=200)
 async def login_for_access_token(
-        form_data: Annotated[OAuth2PasswordRequestForm, Depends()]):
+        form_data: Annotated[OAuth2PasswordRequestForm, Depends()]
+):
     user = user_service.check_pass(form_data.username, form_data.password)
     username = form_data.username
     if not user:
@@ -277,7 +291,10 @@ async def login_for_access_token(
     '/auth/sign-up',
     status_code=201,
     response_model=None,
-    response_model_exclude_defaults=True,
 )
-async def auth(form_data: OAuth2PasswordRequestForm = Depends()):
-    user_service.registrate_user(form_data.username, form_data.password)
+async def auth(
+        username: str = Form(description="username"),
+        password: str = Form(description="password")
+):
+    user_service.registrate_user(username, password)
+    return Response(status_code=201)

@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Callable, Awaitable, AsyncIterable
 
 from fastapi import WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, UUID4
 
 
 class EventType(str, Enum):
@@ -20,6 +20,7 @@ class Event(BaseModel):
 
 class NewMessageEvent(Event):
     type: EventType = Field(EventType.NEW_MESSAGE, const=True)
+    message_id: UUID4
     from_user: str
     text: str
     sent_at: datetime
